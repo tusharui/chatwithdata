@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import jwt, JWTError
@@ -54,13 +54,22 @@ class RegisterRequest(BaseModel):
     password: str
 
 
-class UserResponse(BaseModel):
-    id: int
+class LoginRequest(BaseModel):
     email: str
-    name: str
+    password: str
 
 
-@router.post("/register", response_model=UserResponse)
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+def _user_response(user: User) -> dict:
+    return {"id": str(user.id), "email": user.email, "name": user.name}
+
+
+@router.post("/register", response_model=AuthResponse)
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     existing = await db.execute(select(User).where(User.email == req.email))
     if existing.scalar_one_or_none():
@@ -76,19 +85,21 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.flush()
     await db.commit()
     await db.refresh(user)
-    return user
+
+    token = create_access_token({"sub": str(user.id)})
+    return AuthResponse(access_token=token, user=_user_response(user))
 
 
-@router.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == form_data.username))
+@router.post("/login", response_model=AuthResponse)
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
 
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     try:
-        valid = pwd_context.verify(form_data.password, user.hashed_password)
+        valid = pwd_context.verify(req.password, user.hashed_password)
     except Exception:
         valid = False
 
@@ -96,9 +107,9 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    return AuthResponse(access_token=token, user=_user_response(user))
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me")
 async def me(user: User = Depends(get_current_user)):
-    return user
+    return _user_response(user)
